@@ -2,31 +2,29 @@
 *.fda
 *.zip
 
-# Signature (keep local, get from FDM team for releases)
-signature.dat
-
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.pyo
+*.so
+.Python
+*.egg-info/
+.eggs/
 
-# IDE files
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# Temp files
+# Temporary files
 *.tmp
 *.temp
 *.log
 
-# Development notes
-notes.txt
-TODO.md
+# Signature (keep separate, added during signing)
+# signature.dat

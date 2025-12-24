@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.1.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    name: Build and Release FDA Package
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Validate manifest version
+        run: |
+          MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+          echo "Manifest version: $MANIFEST_VERSION"
+          echo "Release version: ${{ steps.version.outputs.version }}"
+          if [ "$MANIFEST_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "WARNING: Manifest version ($MANIFEST_VERSION) doesn't match release version (${{ steps.version.outputs.version }})"
+          fi
+
+      - name: Validate plugin structure
+        run: |
+          python3 -c "import json; json.load(open('manifest.json'))"
+          python3 -m py_compile python/extractor.py
+          python3 -m py_compile python/check_dependencies.py
+
+      - name: Build FDA package
+        run: |
+          # Create FDA package (ZIP with .fda extension)
+          zip -r fdm-smart-media-optimizer.fda . \
+            -x "*.git*" \
+            -x "*.github*" \
+            -x "README.md" \
+            -x "LICENSE" \
+            -x "*.txt" \
+            -x ".gitignore" \
+            -x "update.json"
+          
+          # Show package info
+          echo "Package created:"
+          ls -lh fdm-smart-media-optimizer.fda
+          echo ""
+          echo "Package contents:"
+          unzip -l fdm-smart-media-optimizer.fda
+
+      - name: Calculate checksums
+        id: checksums
+        run: |
+          SHA256=$(sha256sum fdm-smart-media-optimizer.fda | cut -d' ' -f1)
+          MD5=$(md5sum fdm-smart-media-optimizer.fda | cut -d' ' -f1)
+          SIZE=$(stat -c%s fdm-smart-media-optimizer.fda)
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "md5=$MD5" >> $GITHUB_OUTPUT
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+          echo "SHA256: $SHA256"
+          echo "MD5: $MD5"
+          echo "Size: $SIZE bytes"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          cat << 'EOF' > release_notes.md
+          ## FDM Smart Media Optimizer v${{ steps.version.outputs.version }}
+
+          ### Installation
+
+          1. Download `fdm-smart-media-optimizer.fda` below
+          2. Open Free Download Manager
+          3. Go to **Menu** → **Add-ons** (or press `Ctrl+Shift+A`)
+          4. Click **Install add-on from file...**
+          5. Select the downloaded `.fda` file
+
+          ### Checksums
+
+          - **SHA256:** `${{ steps.checksums.outputs.sha256 }}`
+          - **MD5:** `${{ steps.checksums.outputs.md5 }}`
+          - **Size:** ${{ steps.checksums.outputs.size }} bytes
+
+          ### Requirements
+
+          - Free Download Manager 6.16 or higher
+          - Python 3.8+ (FDM can install automatically)
+
+          ### What's New
+
+          See [CHANGELOG](https://github.com/hassan-software-dev/fdm-smart-media-optimizer#-changelog) for details.
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: FDM Smart Media Optimizer v${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, 'beta') || contains(steps.version.outputs.version, 'alpha') }}
+          files: |
+            fdm-smart-media-optimizer.fda
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update update.json
+        run: |
+          cat << EOF > update.json
+          {
+            "versions": [
+              {
+                "version": "${{ steps.version.outputs.version }}",
+                "distributiveUrl": "https://github.com/hassan-software-dev/fdm-smart-media-optimizer/releases/download/v${{ steps.version.outputs.version }}/fdm-smart-media-optimizer.fda",
+                "minApiVersion": 8,
+                "minFeaturesLevel": 2
+              }
+            ]
+          }
+          EOF
+          cat update.json
+
+      - name: Commit update.json
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git fetch origin main
+          git checkout main
+          git add update.json
+          git diff --staged --quiet || git commit -m "chore: update update.json for v${{ steps.version.outputs.version }}"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

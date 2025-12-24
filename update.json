@@ -1,0 +1,10 @@
+{
+  "versions": [
+    {
+      "version": "1.1.1",
+      "distributiveUrl": "https://github.com/hassan-software-dev/fdm-smart-media-optimizer/releases/download/v1.1.1/fdm-smart-media-optimizer.fda",
+      "minApiVersion": 8,
+      "minFeaturesLevel": 2
+    }
+  ]
+}
