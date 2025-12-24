@@ -409,11 +409,20 @@ function parseMedia(obj, isPlaylistContext) {
     // Track temp file for cleanup
     var tmpFile = null;
     var cleanupDone = false;
+    var fallbackCleanupId = null;
 
     // Cleanup function to ensure temp file is removed
     function cleanup() {
       if (cleanupDone) return;
       cleanupDone = true;
+      
+      // Clear fallback timeout if set
+      if (fallbackCleanupId !== null) {
+        try {
+          clearTimeout(fallbackCleanupId);
+        } catch (e) {}
+        fallbackCleanupId = null;
+      }
       
       if (tmpFile) {
         try {
@@ -434,13 +443,9 @@ function parseMedia(obj, isPlaylistContext) {
     }
 
     // Register cleanup on process termination/cancellation if possible
-    // FDM may call this when user cancels
-    var cleanupRegistered = false;
     try {
       if (typeof obj.onCancel === "function") {
-        // If FDM provides cancellation callback
         obj.onCancel(cleanup);
-        cleanupRegistered = true;
       }
     } catch (e) {}
 
@@ -510,7 +515,7 @@ function parseMedia(obj, isPlaylistContext) {
           
           // Schedule cleanup as a fallback after a timeout
           // This ensures cleanup even if Promise never resolves
-          setTimeout(function() {
+          fallbackCleanupId = setTimeout(function() {
             if (!cleanupDone) {
               console.warn("Fallback cleanup triggered after timeout");
               cleanup();

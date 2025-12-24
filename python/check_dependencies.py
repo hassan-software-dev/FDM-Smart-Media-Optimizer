@@ -1,6 +1,13 @@
 """
 Dependency checker and installer for FDM Smart Media Optimizer.
-This script handles yt-dlp installation and verification.
+
+This is the CANONICAL script for yt-dlp installation and verification.
+Called by media_parser.js via launchPythonScript().
+
+Commands:
+  check   - Check if yt-dlp is installed
+  install - Install yt-dlp via pip (use --upgrade for updates)
+  status  - Full status report (Python, pip, yt-dlp)
 """
 
 import sys
