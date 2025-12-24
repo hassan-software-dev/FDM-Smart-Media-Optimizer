@@ -3,6 +3,16 @@ var SPEED_PROFILE = "BALANCED"; // FASTEST | BALANCED | QUALITY
 // Security: Maximum URL length to prevent buffer overflow attacks
 var MAX_URL_LENGTH = 4096;
 
+// Large download support configuration
+var LARGE_DOWNLOAD_CONFIG = {
+  maxOutputSize: 50 * 1024 * 1024,      // 50MB output limit (for files with many fragments)
+  extractionTimeout: 300,                // 5 minutes for extraction (large playlists)
+  maxFormats: 50,                        // More format options for large files
+  maxFragments: 10000,                   // Support up to 10k fragments (for long/large content)
+  maxPlaylistEntries: 500,               // Support larger playlists
+  chunkSize: 10 * 1024 * 1024            // 10MB chunk size hint for FDM
+};
+
 // Dependency state tracking
 var ytdlpState = {
   checked: false,
@@ -279,9 +289,13 @@ var msParser = {
     }
     
     var ct = (obj.contentType || "").toLowerCase();
+    // Include more content types for large downloads (games, archives)
     return ct.indexOf("video") !== -1 || 
            ct.indexOf("audio") !== -1 ||
-           ct.indexOf("mpegurl") !== -1;
+           ct.indexOf("mpegurl") !== -1 ||
+           ct.indexOf("application/octet-stream") !== -1 ||
+           ct.indexOf("application/zip") !== -1 ||
+           ct.indexOf("application/x-rar") !== -1;
   },
 
   minIntevalBetweenQueryInfoDownloads: function () {
@@ -393,14 +407,16 @@ var msParser = {
           } catch (e) {}
         }
 
-        // Prepare sanitized arguments
+        // Prepare sanitized arguments with large download config
         var args = [
           obj.url,  // Already validated
           SPEED_PROFILE,
           cookiesArg,
           cookiesString,
           proxyUrl,
-          userAgent
+          userAgent,
+          // Pass large download configuration as JSON
+          JSON.stringify(LARGE_DOWNLOAD_CONFIG)
         ];
 
         launchPythonScript(
@@ -410,8 +426,8 @@ var msParser = {
           args
         ).then(function (res) {
           try {
-            // Security: Check output size before parsing
-            if (res.output && res.output.length > 10 * 1024 * 1024) {
+            // Security: Check output size before parsing (increased for large downloads)
+            if (res.output && res.output.length > LARGE_DOWNLOAD_CONFIG.maxOutputSize) {
               reject({ 
                 error: "SECURITY WARNING: Response too large. Possible malicious response from server.", 
                 isParseError: true 
@@ -439,6 +455,12 @@ var msParser = {
                 reject({ error: "Invalid playlist structure", isParseError: true });
                 return;
               }
+              
+              // Add large download hints to formats
+              if (result.formats) {
+                result.formats = addLargeDownloadHints(result.formats);
+              }
+              
               resolve(result);
             }
           } catch (e) {
@@ -458,6 +480,41 @@ var msParser = {
     });
   }
 };
+
+/**
+ * Add hints for large download handling
+ * Adds range request support and chunking hints for FDM
+ */
+function addLargeDownloadHints(formats) {
+  for (var i = 0; i < formats.length; i++) {
+    var fmt = formats[i];
+    var filesize = fmt.filesize || 0;
+    
+    // For large files (>1GB), add hints
+    if (filesize > 1024 * 1024 * 1024) {
+      // Ensure HTTP headers support range requests
+      if (!fmt.httpHeaders) {
+        fmt.httpHeaders = {};
+      }
+      
+      // Add Accept-Ranges hint if not present
+      if (!fmt.httpHeaders["Accept-Ranges"]) {
+        fmt.httpHeaders["Accept-Ranges"] = "bytes";
+      }
+      
+      // Mark as large download for FDM optimization
+      fmt._largeDownload = true;
+      fmt._suggestedChunkSize = LARGE_DOWNLOAD_CONFIG.chunkSize;
+    }
+    
+    // For files with many fragments, ensure proper handling
+    if (fmt.fragments && fmt.fragments.length > 100) {
+      fmt._multiFragment = true;
+      fmt._fragmentCount = fmt.fragments.length;
+    }
+  }
+  return formats;
+}
 
 // Playlist parser - references msParser
 var msBatchVideoParser = msParser;

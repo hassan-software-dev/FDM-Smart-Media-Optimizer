@@ -1,6 +1,22 @@
 import sys, json, subprocess, os, re
 from urllib.parse import urlparse
 
+# === LARGE DOWNLOAD CONFIGURATION ===
+
+# Default configuration for large downloads (can be overridden by JS)
+DEFAULT_LARGE_CONFIG = {
+    "maxOutputSize": 50 * 1024 * 1024,    # 50MB
+    "extractionTimeout": 300,              # 5 minutes
+    "maxFormats": 50,
+    "maxFragments": 10000,
+    "maxPlaylistEntries": 500,
+    "chunkSize": 10 * 1024 * 1024
+}
+
+# Will be updated from command line args if provided
+LARGE_CONFIG = DEFAULT_LARGE_CONFIG.copy()
+
+
 # === YT-DLP AVAILABILITY CHECK ===
 
 def check_ytdlp_installed():
@@ -27,7 +43,6 @@ def check_ytdlp_installed():
 def install_ytdlp():
     """Attempt to install yt-dlp via pip."""
     try:
-        # Try pip install
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
             capture_output=True,
@@ -197,6 +212,14 @@ try:
     proxy_url = sanitize_string_arg(sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None, "proxy_url", 512)
     user_agent = sanitize_string_arg(sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None, "user_agent", 512)
     
+    # Parse large download configuration if provided
+    if len(sys.argv) > 7 and sys.argv[7]:
+        try:
+            config_override = json.loads(sys.argv[7])
+            LARGE_CONFIG.update(config_override)
+        except json.JSONDecodeError:
+            pass  # Use defaults if parsing fails
+    
     # Validate proxy URL if provided
     if proxy_url:
         proxy_valid, proxy_error = is_safe_url(proxy_url.replace("socks5://", "http://").replace("socks4://", "http://"))
@@ -208,17 +231,22 @@ except ValueError as e:
     print(json.dumps({"error": f"Security: {e}"}))
     sys.exit(1)
 
+# Extraction timeout from config
+extraction_timeout = LARGE_CONFIG.get("extractionTimeout", 300)
+
 cmd = [
     "yt-dlp",
     "-J",
     "--no-warnings",
     "--yes-playlist",
-    "--socket-timeout", "30",
-    "--extractor-retries", "3",
+    "--socket-timeout", "60",           # Increased for large files
+    "--extractor-retries", "5",         # More retries for reliability
     "--ignore-errors",
     "--no-exec",           # Prevent execution of external commands
     "--no-batch-file",     # Prevent reading batch files
     "--no-download",       # Ensure we're only extracting info
+    "--flat-playlist",                  # Faster playlist extraction
+    "--no-check-formats",               # Skip format availability check for speed
     url
 ]
 
@@ -245,16 +273,17 @@ if user_agent:
 
 try:
     # Use explicit arguments to prevent shell injection
+    # Increased timeout for large downloads
     proc = subprocess.run(
         cmd, 
         capture_output=True, 
         text=True, 
-        timeout=120,
+        timeout=extraction_timeout,
         shell=False,  # CRITICAL: Never use shell=True
         env={**os.environ, "PYTHONIOENCODING": "utf-8"}  # Controlled environment
     )
 except subprocess.TimeoutExpired:
-    print(json.dumps({"error": "Extraction timed out after 120 seconds"}))
+    print(json.dumps({"error": f"Extraction timed out after {extraction_timeout} seconds. Try a more specific URL."}))
     sys.exit(1)
 except Exception as e:
     print(json.dumps({"error": f"Failed to run yt-dlp: {e}"}))
@@ -267,8 +296,8 @@ if proc.returncode != 0:
     print(json.dumps({"error": stderr}))
     sys.exit(1)
 
-# Limit output size to prevent memory exhaustion
-MAX_OUTPUT_SIZE = 10 * 1024 * 1024  # 10MB
+# Limit output size to prevent memory exhaustion (configurable)
+MAX_OUTPUT_SIZE = LARGE_CONFIG.get("maxOutputSize", 50 * 1024 * 1024)
 if len(proc.stdout) > MAX_OUTPUT_SIZE:
     print(json.dumps({"error": "Output too large - possible malicious response"}))
     sys.exit(1)
@@ -298,7 +327,7 @@ def sanitize_url_output(url_str):
     # Remove any javascript: or data: attempts
     if 'javascript:' in url_str.lower() or 'data:' in url_str.lower():
         return None
-    return url_str[:4096]  # Limit length
+    return url_str[:8192]  # Increased limit for long URLs with tokens
 
 
 def sanitize_text_output(text, max_length=1024):
@@ -388,6 +417,19 @@ def get_container(f, proto, ext):
     return None
 
 
+def format_filesize(size_bytes):
+    """Format file size for display."""
+    if not size_bytes:
+        return None
+    if size_bytes >= 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+    elif size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.2f} KB"
+    return f"{size_bytes} bytes"
+
+
 def score_format(f):
     """Higher score = better choice."""
     tbr = f.get("tbr") or 0
@@ -462,13 +504,15 @@ def build_format(f, entry_info, format_index):
         if isinstance(k, str) and isinstance(v, str):
             http_headers[sanitize_text_output(k, 64)] = sanitize_text_output(v, 512)
 
+    filesize = f.get("filesize") or f.get("filesize_approx")
+    
     fmt = {
         "url": format_url,
         "protocol": proto,
         "ext": sanitize_text_output(ext, 16),
         "quality": f.get("height") or f.get("abr") or 0,
         "tbr": f.get("tbr"),
-        "filesize": f.get("filesize") or f.get("filesize_approx"),
+        "filesize": filesize,
         "vcodec": sanitize_text_output(vcodec, 64),
         "acodec": sanitize_text_output(acodec, 64),
         "fps": f.get("fps"),
@@ -478,6 +522,14 @@ def build_format(f, entry_info, format_index):
         "httpHeaders": http_headers,
         "preference": f.get("preference") or (100 - format_index),
     }
+
+    # Add large download hints
+    if filesize and filesize > 1024 * 1024 * 1024:  # > 1GB
+        fmt["_largeDownload"] = True
+        fmt["_filesizeFormatted"] = format_filesize(filesize)
+        fmt["_suggestedChunkSize"] = LARGE_CONFIG.get("chunkSize", 10 * 1024 * 1024)
+        # Hint for resumable downloads
+        http_headers["Accept-Ranges"] = "bytes"
 
     if has_audio:
         lang = f.get("language")
@@ -502,10 +554,14 @@ def build_format(f, entry_info, format_index):
         if manifest:
             fmt["manifestUrl"] = manifest
 
+    # Handle fragments with increased limit for large downloads
+    max_fragments = LARGE_CONFIG.get("maxFragments", 10000)
     if f.get("fragments"):
         base_url = sanitize_url_output(f.get("fragment_base_url", "")) or ""
         fragments = []
-        for frag in f["fragments"][:1000]:  # Limit fragments
+        total_fragments = len(f["fragments"])
+        
+        for frag in f["fragments"][:max_fragments]:
             frag_url = frag.get("url", "")
             frag_path = frag.get("path", "")
             if frag_url and base_url and frag_url.startswith(base_url):
@@ -513,12 +569,18 @@ def build_format(f, entry_info, format_index):
             elif frag_url and not frag_path:
                 frag_path = frag_url
             if frag_path:
-                fragments.append({"path": sanitize_text_output(frag_path, 2048)})
+                frag_entry = {"path": sanitize_text_output(frag_path, 2048)}
+                # Include fragment duration if available (helps with large files)
+                if frag.get("duration"):
+                    frag_entry["duration"] = frag["duration"]
+                fragments.append(frag_entry)
         
         if base_url:
             fmt["fragment_base_url"] = base_url
         if fragments:
             fmt["fragments"] = fragments
+            fmt["_fragmentCount"] = total_fragments
+            fmt["_multiFragment"] = total_fragments > 100
 
     return {k: v for k, v in fmt.items() if v is not None}
 
@@ -533,7 +595,10 @@ def process_single_entry(entry):
         formats.append(f)
 
     formats.sort(key=lambda x: x["_score"], reverse=True)
-    formats = formats[:12]
+    
+    # Use configurable max formats
+    max_formats = LARGE_CONFIG.get("maxFormats", 50)
+    formats = formats[:max_formats]
 
     fdm_formats = []
     for i, f in enumerate(formats):
@@ -551,7 +616,7 @@ def process_single_entry(entry):
             key=lambda x: (x.get("abr") or 0) + get_codec_preference(x) + get_language_preference(x), 
             reverse=True
         )
-        for i, af in enumerate(audio_formats[:3]):
+        for i, af in enumerate(audio_formats[:5]):  # Increased audio options
             audio_fmt = build_format(af, entry, len(fdm_formats) + i)
             if audio_fmt and not any(f["url"] == audio_fmt["url"] for f in fdm_formats):
                 fdm_formats.append(audio_fmt)
@@ -565,11 +630,11 @@ def process_single_entry(entry):
         "formats": fdm_formats
     }
 
-    # Subtitles
+    # Subtitles (increased limit)
     subs = entry.get("subtitles") or entry.get("automatic_captions") or {}
     if subs:
         result["subtitles"] = {}
-        for lang, arr in list(subs.items())[:50]:  # Limit languages
+        for lang, arr in list(subs.items())[:100]:  # Increased limit
             if not arr:
                 continue
             sorted_subs = sorted(arr, key=lambda s: (
@@ -593,7 +658,7 @@ def process_single_entry(entry):
     if thumbs:
         sorted_thumbs = sorted(thumbs, key=lambda t: (t.get("height") or 0) * (t.get("width") or 0))
         result["thumbnails"] = []
-        for i, t in enumerate(sorted_thumbs[:20]):  # Limit thumbnails
+        for i, t in enumerate(sorted_thumbs[:20]):
             thumb_url = sanitize_url_output(t.get("url"))
             if thumb_url:
                 result["thumbnails"].append({
@@ -607,25 +672,34 @@ def process_single_entry(entry):
 
 
 # Handle playlists vs single videos
+max_playlist_entries = LARGE_CONFIG.get("maxPlaylistEntries", 500)
+
 if info.get("_type") == "playlist" and info.get("entries"):
-    entries = [e for e in info["entries"] if e][:50]  # Limit entries
+    entries = [e for e in info["entries"] if e][:max_playlist_entries]
     output = {
         "_type": "playlist",
         "id": sanitize_text_output(info.get("id"), 128),
         "title": sanitize_text_output(info.get("title", "Playlist"), 512),
         "webpage_url": sanitize_url_output(info.get("webpage_url")),
-        "entries": []
+        "entries": [],
+        "_totalEntries": len(info["entries"]),  # Track total for large playlists
+        "_entriesIncluded": len(entries)
     }
     
     for e in entries:
         entry_url = sanitize_url_output(e.get("webpage_url") or e.get("url"))
         if entry_url:
-            output["entries"].append({
+            entry_data = {
                 "_type": "url",
                 "url": entry_url,
                 "title": sanitize_text_output(e.get("title", "Media"), 512),
                 "duration": e.get("duration")
-            })
+            }
+            # Include filesize hint if available
+            if e.get("filesize"):
+                entry_data["_filesize"] = e["filesize"]
+                entry_data["_filesizeFormatted"] = format_filesize(e["filesize"])
+            output["entries"].append(entry_data)
     
     thumbs = info.get("thumbnails") or []
     if thumbs:
