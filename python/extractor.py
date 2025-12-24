@@ -234,21 +234,42 @@ except ValueError as e:
 # Extraction timeout from config
 extraction_timeout = LARGE_CONFIG.get("extractionTimeout", 300)
 
+# Check if this looks like a playlist URL
+is_playlist_url = any(pattern in url.lower() for pattern in [
+    'list=', '/playlist/', '/album/', '/channel/', '/user/', '/c/', '/sets/', '/@'
+])
+
+# Get playlist context from config
+is_playlist_context = LARGE_CONFIG.get("isPlaylistContext", False)
+
 cmd = [
     "yt-dlp",
     "-J",
     "--no-warnings",
-    "--yes-playlist",
     "--socket-timeout", "60",           # Increased for large files
     "--extractor-retries", "5",         # More retries for reliability
     "--ignore-errors",
     "--no-exec",           # Prevent execution of external commands
     "--no-batch-file",     # Prevent reading batch files
     "--no-download",       # Ensure we're only extracting info
-    "--flat-playlist",                  # Faster playlist extraction
+]
+
+# Only use --flat-playlist for actual playlist URLs to speed up extraction
+# For single videos, we need full format info
+if is_playlist_url or is_playlist_context:
+    cmd.extend([
+        "--yes-playlist",
+        "--flat-playlist",              # Faster playlist extraction
+    ])
+else:
+    cmd.extend([
+        "--no-playlist",                # Extract single video only
+    ])
+
+cmd.extend([
     "--no-check-formats",               # Skip format availability check for speed
     url
-]
+])
 
 # Add cookie support for authenticated downloads
 if cookies_file:

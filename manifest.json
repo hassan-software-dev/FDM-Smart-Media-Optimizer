@@ -2,8 +2,8 @@
   "uuid": "fdm-smart-media-optimizer",
   "name": "FDM Smart Media Optimizer",
   "author": "Hasan Shahid",
-  "description": "IDM-like smart extraction, optimization and media selection for FDM. Supports large downloads (20GB+) with resume capability.",
-  "version": "1.1.0",
+  "description": "Smart media extraction with yt-dlp. Supports large downloads (20GB+) with resume capability.",
+  "version": "1.1.1",
   "icon": "icon.png",
   "mediaParser": true,
   "mediaListParser": true,
@@ -16,11 +16,5 @@
   },
   "minApiVersion": 8,
   "minFeaturesLevel": 2,
-  "targetApiVersion": 9,
-  "allowedPaths": [
-    "%LOCALAPPDATA%\\Google\\Chrome\\User Data",
-    "%APPDATA%\\Mozilla\\Firefox\\Profiles",
-    "~/.config/google-chrome",
-    "~/.mozilla/firefox"
-  ]
+  "targetApiVersion": 9
 }

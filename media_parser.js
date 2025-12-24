@@ -289,13 +289,16 @@ var msParser = {
     }
     
     var ct = (obj.contentType || "").toLowerCase();
-    // Include more content types for large downloads (games, archives)
+    var size = obj.resourceSize || 0;
+    
+    // Include more content types for large downloads
+    // Also check if resource size suggests media (>1MB)
     return ct.indexOf("video") !== -1 || 
            ct.indexOf("audio") !== -1 ||
            ct.indexOf("mpegurl") !== -1 ||
            ct.indexOf("application/octet-stream") !== -1 ||
-           ct.indexOf("application/zip") !== -1 ||
-           ct.indexOf("application/x-rar") !== -1;
+           ct.indexOf("application/dash+xml") !== -1 ||
+           (size > 1024 * 1024 && ct.indexOf("application/") !== -1);
   },
 
   minIntevalBetweenQueryInfoDownloads: function () {
@@ -309,177 +312,252 @@ var msParser = {
   },
 
   parse: function (obj) {
-    return new Promise(function (resolve, reject) {
-      // Security: Validate URL before processing
-      var validation = validateUrlSecurity(obj.url);
-      if (!validation.valid) {
-        reject({ 
-          error: validation.error, 
-          isParseError: true 
-        });
-        return;
-      }
-
-      // First ensure yt-dlp is available
-      ensureYtdlpAvailable(obj.requestId, obj.interactive).then(function(ytdlpStatus) {
-        if (ytdlpStatus.justInstalled) {
-          console.log("yt-dlp was just installed (version " + ytdlpStatus.version + "). Proceeding with extraction...");
-        }
-
-        // Build cookies file if cookies exist
-        var cookiesArg = "";
-        var cookiesString = "";
-        var tmpFile = null;
-        
-        // Check if plugin is allowed to use browser cookies
-        var canUseCookies = true;
-        try {
-          if (typeof App !== "undefined" && App && App.pluginsAllowWbCookies === false) {
-            canUseCookies = false;
-          }
-        } catch (e) {}
-
-        if (canUseCookies && obj.cookies && obj.cookies.length > 0) {
-          try {
-            tmpFile = qtJsTools.createTmpFile("cookies.txt");
-            var cookieLines = ["# Netscape HTTP Cookie File"];
-            var cookiePairs = [];
-            
-            // Security: Limit number of cookies to prevent DoS
-            var maxCookies = Math.min(obj.cookies.length, 100);
-            
-            for (var i = 0; i < maxCookies; i++) {
-              var c = obj.cookies[i];
-              // Sanitize cookie values
-              var cookieName = sanitizeString(c.name, 256);
-              var cookieValue = sanitizeString(c.value, 4096);
-              var cookieDomain = sanitizeString(c.domain, 256);
-              var cookiePath = sanitizeString(c.path, 256) || "/";
-              
-              if (!cookieName) continue;
-              
-              var secure = c.isSecure ? "TRUE" : "FALSE";
-              var expiry = Math.floor(c.expirationDate || 0).toString();
-              var subdomainFlag = cookieDomain.charAt(0) === "." ? "TRUE" : "FALSE";
-              
-              var line = [
-                cookieDomain,
-                subdomainFlag,
-                cookiePath,
-                secure,
-                expiry,
-                cookieName,
-                cookieValue
-              ].join("\t");
-              cookieLines.push(line);
-              
-              var cookieEntry = cookieName + "=" + cookieValue;
-              if (cookieDomain) cookieEntry += "; Domain=" + cookieDomain;
-              if (cookiePath) cookieEntry += "; Path=" + cookiePath;
-              if (c.isSecure) cookieEntry += "; Secure";
-              if (c.expirationDate) cookieEntry += "; Expires=" + Math.floor(c.expirationDate);
-              cookiePairs.push(cookieEntry);
-            }
-            
-            tmpFile.writeText(cookieLines.join("\n"));
-            cookiesArg = tmpFile.path();
-            cookiesString = cookiePairs.join("; ");
-          } catch (e) {
-            console.warn("Failed to create cookies file: " + e);
-          }
-        }
-
-        // Get proxy settings for the URL
-        var proxyUrl = "";
-        try {
-          proxyUrl = qtJsNetworkProxyMgr.proxyForUrl(obj.url) || "";
-          // Sanitize proxy URL
-          proxyUrl = sanitizeString(proxyUrl, 512);
-        } catch (e) {
-          console.warn("Failed to get proxy: " + e);
-        }
-
-        // Get user agent from browser or system default
-        var userAgent = sanitizeString(obj.userAgent, 512) || "";
-        if (!userAgent) {
-          try {
-            userAgent = sanitizeString(qtJsSystem.defaultUserAgent, 512) || "";
-          } catch (e) {}
-        }
-
-        // Prepare sanitized arguments with large download config
-        var args = [
-          obj.url,  // Already validated
-          SPEED_PROFILE,
-          cookiesArg,
-          cookiesString,
-          proxyUrl,
-          userAgent,
-          // Pass large download configuration as JSON
-          JSON.stringify(LARGE_DOWNLOAD_CONFIG)
-        ];
-
-        launchPythonScript(
-          obj.requestId,
-          obj.interactive,
-          "python/extractor.py",
-          args
-        ).then(function (res) {
-          try {
-            // Security: Check output size before parsing (increased for large downloads)
-            if (res.output && res.output.length > LARGE_DOWNLOAD_CONFIG.maxOutputSize) {
-              reject({ 
-                error: "SECURITY WARNING: Response too large. Possible malicious response from server.", 
-                isParseError: true 
-              });
-              return;
-            }
-
-            var result = JSON.parse(res.output);
-            
-            if (result.error) {
-              // Check if error contains security warning
-              var errorMsg = result.error;
-              if (errorMsg.indexOf("Security:") === 0 || errorMsg.indexOf("WARNING:") !== -1) {
-                reject({ error: errorMsg, isParseError: true });
-              } else {
-                reject({ error: result.error, isParseError: true });
-              }
-            } else {
-              // Validate result structure
-              if (result.formats && !Array.isArray(result.formats)) {
-                reject({ error: "Invalid response structure", isParseError: true });
-                return;
-              }
-              if (result._type === "playlist" && result.entries && !Array.isArray(result.entries)) {
-                reject({ error: "Invalid playlist structure", isParseError: true });
-                return;
-              }
-              
-              // Add large download hints to formats
-              if (result.formats) {
-                result.formats = addLargeDownloadHints(result.formats);
-              }
-              
-              resolve(result);
-            }
-          } catch (e) {
-            reject({ error: "Invalid extractor output: " + e.message, isParseError: true });
-          }
-        }).catch(function (err) {
-          reject({ error: err.error || "Extractor failed", isParseError: false });
-        });
-      }).catch(function(depErr) {
-        // Dependency check/install failed
-        reject({
-          error: depErr.error || "Failed to ensure dependencies are available",
-          isParseError: false,
-          isDependencyError: depErr.isDependencyError || false
-        });
-      });
-    });
+    return parseMedia(obj, false);
   }
 };
+
+/**
+ * Separate playlist parser with playlist-specific optimizations
+ */
+var msBatchVideoParser = {
+  isSupportedSource: function(url) {
+    // First check if it's a supported domain at all
+    var validation = validateUrlSecurity(url);
+    if (!validation.valid) {
+      return false;
+    }
+
+    try {
+      var hostname = url.match(/^https?:\/\/([^\/]+)/i);
+      if (!hostname) return false;
+      var domain = hostname[1].toLowerCase();
+      
+      var isSupported = false;
+      for (var i = 0; i < SUPPORTED_DOMAINS.length; i++) {
+        if (domain.indexOf(SUPPORTED_DOMAINS[i]) !== -1) {
+          isSupported = true;
+          break;
+        }
+      }
+      
+      if (!isSupported) return false;
+
+      // Check for playlist indicators in URL
+      var playlistPatterns = [
+        /[?&]list=/i,           // YouTube playlists
+        /\/playlist\//i,        // Generic playlist paths
+        /\/album\//i,           // Music albums
+        /\/channel\//i,         // Channel pages
+        /\/user\//i,            // User pages
+        /\/c\//i,               // YouTube channel short URL
+        /@[^\/]+$/i,            // YouTube handle
+        /\/sets\//i,            // SoundCloud sets
+        /\/playlists\//i        // Generic playlists
+      ];
+      
+      for (var j = 0; j < playlistPatterns.length; j++) {
+        if (playlistPatterns[j].test(url)) {
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  },
+
+  supportedSourceCheckPriority: function() {
+    // Higher priority than single media parser for playlist URLs
+    return 150;
+  },
+
+  isPossiblySupportedSource: function(obj) {
+    return msParser.isPossiblySupportedSource(obj);
+  },
+
+  minIntevalBetweenQueryInfoDownloads: function() {
+    // Longer interval for playlists to avoid rate limiting
+    return 1000;
+  },
+
+  overrideUrlPolicy: function(url) {
+    return false;
+  },
+
+  parse: function(obj) {
+    return parseMedia(obj, true);
+  }
+};
+
+/**
+ * Shared parsing logic for both single and playlist parsers
+ * @param {object} obj - Parse request object
+ * @param {boolean} isPlaylistContext - Whether called from playlist parser
+ */
+function parseMedia(obj, isPlaylistContext) {
+  return new Promise(function (resolve, reject) {
+    // Security: Validate URL before processing
+    var validation = validateUrlSecurity(obj.url);
+    if (!validation.valid) {
+      reject({ 
+        error: validation.error, 
+        isParseError: true 
+      });
+      return;
+    }
+
+    // First ensure yt-dlp is available
+    ensureYtdlpAvailable(obj.requestId, obj.interactive).then(function(ytdlpStatus) {
+      if (ytdlpStatus.justInstalled) {
+        console.log("yt-dlp was just installed (version " + ytdlpStatus.version + "). Proceeding with extraction...");
+      }
+
+      // Build cookies file if cookies exist
+      var cookiesArg = "";
+      var cookiesString = "";
+      var tmpFile = null;
+      
+      // Check if plugin is allowed to use browser cookies
+      var canUseCookies = true;
+      try {
+        if (typeof App !== "undefined" && App && App.pluginsAllowWbCookies === false) {
+          canUseCookies = false;
+        }
+      } catch (e) {}
+
+      if (canUseCookies && obj.cookies && obj.cookies.length > 0) {
+        try {
+          tmpFile = qtJsTools.createTmpFile("cookies.txt");
+          var cookieLines = ["# Netscape HTTP Cookie File"];
+          var cookiePairs = [];
+          
+          // Security: Limit number of cookies to prevent DoS
+          var maxCookies = Math.min(obj.cookies.length, 100);
+          
+          for (var i = 0; i < maxCookies; i++) {
+            var c = obj.cookies[i];
+            // Sanitize cookie values
+            var cookieName = sanitizeString(c.name, 256);
+            var cookieValue = sanitizeString(c.value, 4096);
+            var cookieDomain = sanitizeString(c.domain, 256);
+            var cookiePath = sanitizeString(c.path, 256) || "/";
+            
+            if (!cookieName) continue;
+            
+            var secure = c.isSecure ? "TRUE" : "FALSE";
+            var expiry = Math.floor(c.expirationDate || 0).toString();
+            var subdomainFlag = cookieDomain.charAt(0) === "." ? "TRUE" : "FALSE";
+            
+            var line = [
+              cookieDomain,
+              subdomainFlag,
+              cookiePath,
+              secure,
+              expiry,
+              cookieName,
+              cookieValue
+            ].join("\t");
+            cookieLines.push(line);
+            
+            var cookieEntry = cookieName + "=" + cookieValue;
+            if (cookieDomain) cookieEntry += "; Domain=" + cookieDomain;
+            if (cookiePath) cookieEntry += "; Path=" + cookiePath;
+            if (c.isSecure) cookieEntry += "; Secure";
+            if (c.expirationDate) cookieEntry += "; Expires=" + Math.floor(c.expirationDate);
+            cookiePairs.push(cookieEntry);
+          }
+          
+          tmpFile.writeText(cookieLines.join("\n"));
+          cookiesArg = tmpFile.path();
+          cookiesString = cookiePairs.join("; ");
+        } catch (e) {
+          console.warn("Failed to create cookies file: " + e);
+        }
+      }
+
+      // Get proxy settings for the URL
+      var proxyUrl = "";
+      try {
+        proxyUrl = qtJsNetworkProxyMgr.proxyForUrl(obj.url) || "";
+        // Sanitize proxy URL
+        proxyUrl = sanitizeString(proxyUrl, 512);
+      } catch (e) {
+        console.warn("Failed to get proxy: " + e);
+      }
+
+      // Get user agent from browser or system default
+      var userAgent = sanitizeString(obj.userAgent, 512) || "";
+      if (!userAgent) {
+        try {
+          userAgent = sanitizeString(qtJsSystem.defaultUserAgent, 512) || "";
+        } catch (e) {}
+      }
+
+      // Add playlist context to config
+      var config = JSON.parse(JSON.stringify(LARGE_DOWNLOAD_CONFIG));
+      config.isPlaylistContext = isPlaylistContext;
+
+      var args = [
+        obj.url,
+        SPEED_PROFILE,
+        cookiesArg,
+        cookiesString,
+        proxyUrl,
+        userAgent,
+        JSON.stringify(config)
+      ];
+
+      launchPythonScript(
+        obj.requestId,
+        obj.interactive,
+        "python/extractor.py",
+        args
+      ).then(function (res) {
+        try {
+          // Security: Check output size before parsing (increased for large downloads)
+          if (res.output && res.output.length > LARGE_DOWNLOAD_CONFIG.maxOutputSize) {
+            reject({ 
+              error: "SECURITY WARNING: Response too large. Possible malicious response from server.", 
+              isParseError: true 
+            });
+            return;
+          }
+
+          var result = JSON.parse(res.output);
+          
+          if (result.error) {
+            reject({ error: result.error, isParseError: true });
+          } else {
+            if (result.formats && !Array.isArray(result.formats)) {
+              reject({ error: "Invalid response structure", isParseError: true });
+              return;
+            }
+            if (result._type === "playlist" && result.entries && !Array.isArray(result.entries)) {
+              reject({ error: "Invalid playlist structure", isParseError: true });
+              return;
+            }
+            
+            if (result.formats) {
+              result.formats = addLargeDownloadHints(result.formats);
+            }
+            
+            resolve(result);
+          }
+        } catch (e) {
+          reject({ error: "Invalid extractor output: " + e.message, isParseError: true });
+        }
+      }).catch(function (err) {
+        reject({ error: err.error || "Extractor failed", isParseError: false });
+      });
+    }).catch(function(depErr) {
+      reject({
+        error: depErr.error || "Failed to ensure dependencies are available",
+        isParseError: false,
+        isDependencyError: depErr.isDependencyError || false
+      });
+    });
+  });
+}
 
 /**
  * Add hints for large download handling
@@ -515,6 +593,3 @@ function addLargeDownloadHints(formats) {
   }
   return formats;
 }
-
-// Playlist parser - references msParser
-var msBatchVideoParser = msParser;
