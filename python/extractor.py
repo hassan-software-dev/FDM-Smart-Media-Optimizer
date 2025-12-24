@@ -192,6 +192,40 @@ def validate_file_path(path, must_exist=True):
     return abs_path
 
 
+def is_safe_fragment_path(path, base_url=None):
+    """Validate fragment path to prevent path traversal and injection."""
+    if not path or not isinstance(path, str):
+        return False, "Fragment path is empty or invalid"
+    
+    # Length limit
+    if len(path) > 4096:
+        return False, "Fragment path too long"
+    
+    # Check for path traversal
+    if '..' in path:
+        return False, "Path traversal detected in fragment"
+    
+    # Check for dangerous characters
+    dangerous_patterns = [
+        r'[;\|&`$]',           # Shell metacharacters
+        r'[\x00-\x1f\x7f]',    # Control characters
+    ]
+    for pattern in dangerous_patterns:
+        if re.search(pattern, path):
+            return False, f"Fragment path contains dangerous characters"
+    
+    # If it's a full URL, validate it
+    if path.startswith('http://') or path.startswith('https://'):
+        return is_safe_url(path)
+    
+    # If base_url is provided, validate the combined URL
+    if base_url:
+        full_url = base_url.rstrip('/') + '/' + path.lstrip('/')
+        return is_safe_url(full_url)
+    
+    return True, None
+
+
 # === MAIN EXECUTION ===
 
 if len(sys.argv) < 2:
@@ -581,6 +615,7 @@ def build_format(f, entry_info, format_index):
         base_url = sanitize_url_output(f.get("fragment_base_url", "")) or ""
         fragments = []
         total_fragments = len(f["fragments"])
+        skipped_fragments = 0
         
         for frag in f["fragments"][:max_fragments]:
             frag_url = frag.get("url", "")
@@ -589,7 +624,14 @@ def build_format(f, entry_info, format_index):
                 frag_path = frag_url[len(base_url):]
             elif frag_url and not frag_path:
                 frag_path = frag_url
+            
             if frag_path:
+                # Validate fragment path
+                path_valid, path_error = is_safe_fragment_path(frag_path, base_url)
+                if not path_valid:
+                    skipped_fragments += 1
+                    continue
+                
                 frag_entry = {"path": sanitize_text_output(frag_path, 2048)}
                 # Include fragment duration if available (helps with large files)
                 if frag.get("duration"):
@@ -601,6 +643,7 @@ def build_format(f, entry_info, format_index):
         if fragments:
             fmt["fragments"] = fragments
             fmt["_fragmentCount"] = total_fragments
+            fmt["_fragmentsSkipped"] = skipped_fragments
             fmt["_multiFragment"] = total_fragments > 100
 
     return {k: v for k, v in fmt.items() if v is not None}

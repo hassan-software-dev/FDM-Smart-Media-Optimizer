@@ -8,6 +8,33 @@ import json
 import subprocess
 import os
 
+# Consistent timeout values
+TIMEOUT_VERSION_CHECK = 15
+TIMEOUT_INSTALL = 300  # 5 minutes, matching extractor.py
+
+# Minimum recommended yt-dlp version (YYYY.MM.DD format)
+MIN_RECOMMENDED_VERSION = "2024.01.01"
+
+
+def parse_version(version_str):
+    """Parse yt-dlp version string to comparable tuple."""
+    try:
+        # yt-dlp uses YYYY.MM.DD format
+        parts = version_str.strip().split('.')
+        return tuple(int(p) for p in parts[:3])
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+
+def is_version_adequate(version_str):
+    """Check if version meets minimum recommendation."""
+    if not version_str:
+        return False
+    current = parse_version(version_str)
+    minimum = parse_version(MIN_RECOMMENDED_VERSION)
+    return current >= minimum
+
+
 def get_python_info():
     """Get Python interpreter information."""
     return {
@@ -24,13 +51,16 @@ def check_ytdlp():
             ["yt-dlp", "--version"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=TIMEOUT_VERSION_CHECK,
             shell=False
         )
         if result.returncode == 0:
+            version = result.stdout.strip()
             return {
                 "installed": True,
-                "version": result.stdout.strip(),
+                "version": version,
+                "versionAdequate": is_version_adequate(version),
+                "minRecommended": MIN_RECOMMENDED_VERSION,
                 "error": None
             }
         return {
@@ -70,7 +100,7 @@ def install_ytdlp(upgrade=False):
             cmd,
             capture_output=True,
             text=True,
-            timeout=180,  # 3 minutes for slow connections
+            timeout=TIMEOUT_INSTALL,
             shell=False
         )
         
@@ -81,6 +111,7 @@ def install_ytdlp(upgrade=False):
                 "success": True,
                 "message": "yt-dlp installed successfully",
                 "version": check.get("version"),
+                "versionAdequate": check.get("versionAdequate", False),
                 "output": result.stdout[-500:] if result.stdout else None
             }
         else:
@@ -95,7 +126,7 @@ def install_ytdlp(upgrade=False):
             "success": False,
             "message": "Installation timed out",
             "version": None,
-            "error": "The installation took too long. Please check your internet connection."
+            "error": f"The installation took longer than {TIMEOUT_INSTALL} seconds. Please check your internet connection."
         }
     except Exception as e:
         return {

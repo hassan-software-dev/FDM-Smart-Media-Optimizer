@@ -406,6 +406,44 @@ function parseMedia(obj, isPlaylistContext) {
       return;
     }
 
+    // Track temp file for cleanup
+    var tmpFile = null;
+    var cleanupDone = false;
+
+    // Cleanup function to ensure temp file is removed
+    function cleanup() {
+      if (cleanupDone) return;
+      cleanupDone = true;
+      
+      if (tmpFile) {
+        try {
+          // Attempt to delete the temp file explicitly
+          // FDM's qtJsTools temp files have a remove/delete method in some versions
+          if (typeof tmpFile.remove === "function") {
+            tmpFile.remove();
+          } else if (typeof tmpFile.close === "function") {
+            tmpFile.close();
+          }
+        } catch (e) {
+          // Ignore cleanup errors - file will be cleaned up when object is GC'd
+          console.warn("Temp file cleanup: " + e);
+        }
+        // Null the reference to help garbage collection
+        tmpFile = null;
+      }
+    }
+
+    // Register cleanup on process termination/cancellation if possible
+    // FDM may call this when user cancels
+    var cleanupRegistered = false;
+    try {
+      if (typeof obj.onCancel === "function") {
+        // If FDM provides cancellation callback
+        obj.onCancel(cleanup);
+        cleanupRegistered = true;
+      }
+    } catch (e) {}
+
     // First ensure yt-dlp is available
     ensureYtdlpAvailable(obj.requestId, obj.interactive).then(function(ytdlpStatus) {
       if (ytdlpStatus.justInstalled) {
@@ -415,7 +453,6 @@ function parseMedia(obj, isPlaylistContext) {
       // Build cookies file if cookies exist
       var cookiesArg = "";
       var cookiesString = "";
-      var tmpFile = null;
       
       // Check if plugin is allowed to use browser cookies
       var canUseCookies = true;
@@ -470,6 +507,16 @@ function parseMedia(obj, isPlaylistContext) {
           tmpFile.writeText(cookieLines.join("\n"));
           cookiesArg = tmpFile.path();
           cookiesString = cookiePairs.join("; ");
+          
+          // Schedule cleanup as a fallback after a timeout
+          // This ensures cleanup even if Promise never resolves
+          setTimeout(function() {
+            if (!cleanupDone) {
+              console.warn("Fallback cleanup triggered after timeout");
+              cleanup();
+            }
+          }, (LARGE_DOWNLOAD_CONFIG.extractionTimeout + 60) * 1000);
+          
         } catch (e) {
           console.warn("Failed to create cookies file: " + e);
         }
@@ -479,13 +526,11 @@ function parseMedia(obj, isPlaylistContext) {
       var proxyUrl = "";
       try {
         proxyUrl = qtJsNetworkProxyMgr.proxyForUrl(obj.url) || "";
-        // Sanitize proxy URL
         proxyUrl = sanitizeString(proxyUrl, 512);
       } catch (e) {
         console.warn("Failed to get proxy: " + e);
       }
 
-      // Get user agent from browser or system default
       var userAgent = sanitizeString(obj.userAgent, 512) || "";
       if (!userAgent) {
         try {
@@ -493,7 +538,6 @@ function parseMedia(obj, isPlaylistContext) {
         } catch (e) {}
       }
 
-      // Add playlist context to config
       var config = JSON.parse(JSON.stringify(LARGE_DOWNLOAD_CONFIG));
       config.isPlaylistContext = isPlaylistContext;
 
@@ -513,8 +557,8 @@ function parseMedia(obj, isPlaylistContext) {
         "python/extractor.py",
         args
       ).then(function (res) {
+        cleanup(); // Clean up temp file on success
         try {
-          // Security: Check output size before parsing (increased for large downloads)
           if (res.output && res.output.length > LARGE_DOWNLOAD_CONFIG.maxOutputSize) {
             reject({ 
               error: "SECURITY WARNING: Response too large. Possible malicious response from server.", 
@@ -547,9 +591,11 @@ function parseMedia(obj, isPlaylistContext) {
           reject({ error: "Invalid extractor output: " + e.message, isParseError: true });
         }
       }).catch(function (err) {
+        cleanup(); // Clean up temp file on error
         reject({ error: err.error || "Extractor failed", isParseError: false });
       });
     }).catch(function(depErr) {
+      cleanup(); // Clean up temp file on dependency error
       reject({
         error: depErr.error || "Failed to ensure dependencies are available",
         isParseError: false,
