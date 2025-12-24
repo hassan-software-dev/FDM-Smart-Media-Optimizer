@@ -1,0 +1,32 @@
+# Build artifacts
+*.fda
+*.zip
+
+# Signature (keep local, get from FDM team for releases)
+signature.dat
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temp files
+*.tmp
+*.temp
+*.log
+
+# Development notes
+notes.txt
+TODO.md

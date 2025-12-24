@@ -1,7 +1,7 @@
 {
   "uuid": "fdm-smart-media-optimizer",
   "name": "FDM Smart Media Optimizer",
-  "author": "Hasan Shahid",
+  "author": "Hassan Shahid",
   "description": "Smart media extraction with yt-dlp. Supports large downloads (20GB+) with resume capability.",
   "version": "1.1.1",
   "icon": "icon.png",
@@ -14,6 +14,7 @@
   "dependencies": {
     "Python": { "minVersion": "3.8" }
   },
+  "updateUrl": "https://raw.githubusercontent.com/hassan-software-dev/fdm-smart-media-optimizer/main/update.json",
   "minApiVersion": 8,
   "minFeaturesLevel": 2,
   "targetApiVersion": 9
